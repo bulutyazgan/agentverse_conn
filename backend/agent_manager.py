@@ -1,115 +1,48 @@
-"""Agent session management and lifecycle."""
+"""Agent management and lifecycle."""
 
 import asyncio
-import uuid
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field
-from threading import Lock
-
+import traceback
+from datetime import datetime
+from typing import Optional, AsyncGenerator, Dict, Any
+from dataclasses import dataclass
 from strands import Agent
 from strands.models.ollama import OllamaModel
 from config import Config
 
-
 @dataclass
 class Message:
-    """Represents a single message in a conversation."""
-    role: str  # 'user' or 'assistant'
+    role: str
     content: str
-    timestamp: datetime = field(default_factory=datetime.now)
-    tools_used: List[str] = field(default_factory=list)
-
-
-@dataclass
-class Session:
-    """Represents a chat session."""
-    session_id: str
-    created_at: datetime = field(default_factory=datetime.now)
-    last_activity: datetime = field(default_factory=datetime.now)
-    messages: List[Message] = field(default_factory=list)
-    agent: Optional[Agent] = None
-
+    timestamp: datetime
+    tools_used: list
 
 class AgentManager:
-    """Manages agent sessions and handles agent interactions."""
-
     def __init__(self):
-        self.sessions: Dict[str, Session] = {}
-        self.lock = Lock()
-        self._ollama_model = None
-
-    @property
-    def ollama_model(self):
-        """Lazy initialization of Ollama model."""
-        if self._ollama_model is None:
-            self._ollama_model = OllamaModel(
+        self.messages: list[Message] = []
+        self.agent: Optional[Agent] = None
+        self.model = None
+        
+    def _initialize_model(self):
+        """Initialize Ollama model if not already done."""
+        if self.model is None:
+            self.model = OllamaModel(
                 host=Config.OLLAMA_HOST,
                 model_id=Config.OLLAMA_MODEL
             )
-        return self._ollama_model
-
-    def create_session(self) -> str:
-        """Create a new chat session."""
-        with self.lock:
-            # Clean up old sessions if we're at the limit
-            if len(self.sessions) >= Config.MAX_SESSIONS:
-                self._cleanup_old_sessions()
-
-            session_id = str(uuid.uuid4())
-            agent = Agent(model=self.ollama_model)
-
-            session = Session(
-                session_id=session_id,
-                agent=agent
+            print(f"Initialized Ollama model: {Config.OLLAMA_MODEL}")
+    
+    def _initialize_agent(self):
+        """Initialize agent with model if not already done."""
+        if self.agent is None:
+            self._initialize_model()
+            self.agent = Agent(
+                model=self.model,
+                system_prompt="You are a helpful AI assistant."
             )
-
-            self.sessions[session_id] = session
-            return session_id
-
-    def get_session(self, session_id: str) -> Optional[Session]:
-        """Retrieve a session by ID."""
-        with self.lock:
-            session = self.sessions.get(session_id)
-            if session:
-                session.last_activity = datetime.now()
-            return session
-
-    def delete_session(self, session_id: str) -> bool:
-        """Delete a session."""
-        with self.lock:
-            if session_id in self.sessions:
-                session = self.sessions[session_id]
-                # Cleanup agent resources
-                if session.agent:
-                    try:
-                        session.agent.cleanup()
-                    except Exception:
-                        pass  # Best effort cleanup
-
-                del self.sessions[session_id]
-                return True
-            return False
-
-    def list_sessions(self) -> List[Dict[str, Any]]:
-        """List all active sessions."""
-        with self.lock:
-            return [
-                {
-                    'session_id': session.session_id,
-                    'created_at': session.created_at.isoformat(),
-                    'last_activity': session.last_activity.isoformat(),
-                    'message_count': len(session.messages)
-                }
-                for session in self.sessions.values()
-            ]
-
-    def get_history(self, session_id: str) -> List[Dict[str, Any]]:
-        """Get conversation history for a session."""
-        session = self.get_session(session_id)
-        if not session:
-            return []
-
+            print("Agent initialized")
+    
+    def get_messages(self) -> list:
+        """Get all conversation messages."""
         return [
             {
                 'role': msg.role,
@@ -117,114 +50,104 @@ class AgentManager:
                 'timestamp': msg.timestamp.isoformat(),
                 'tools_used': msg.tools_used
             }
-            for msg in session.messages
+            for msg in self.messages
         ]
-
-    async def stream_response(self, session_id: str, user_message: str):
-        """
-        Stream agent response for a user message.
-
-        Yields events in SSE format:
-        - {'type': 'message', 'content': '...'}
-        - {'type': 'tool', 'tool_name': '...', 'status': 'start'|'end'}
-        - {'type': 'done'}
-        - {'type': 'error', 'message': '...'}
-        """
-        print(f"[DEBUG] stream_response called for session {session_id}")
-        session = self.get_session(session_id)
-        if not session:
-            print(f"[ERROR] Session not found: {session_id}")
-            yield {'type': 'error', 'message': 'Session not found'}
-            return
-
-        if not session.agent:
-            print(f"[ERROR] Agent not initialized for session: {session_id}")
-            yield {'type': 'error', 'message': 'Agent not initialized'}
-            return
-
-        # Add user message to history
-        user_msg = Message(role='user', content=user_message)
-        session.messages.append(user_msg)
-        print(f"[DEBUG] User message added: {user_message[:50]}...")
-
-        # Collect the full response and track tools
-        full_response = []
-        tools_used = []
-
+    
+    def add_message(self, role: str, content: str, tools_used: list = None):
+        """Add a message to conversation history."""
+        message = Message(
+            role=role,
+            content=content,
+            timestamp=datetime.now(),
+            tools_used=tools_used or []
+        )
+        self.messages.append(message)
+    
+    def clear_history(self):
+        """Clear conversation history."""
+        self.messages = []
+        # Reinitialize agent to clear its context
+        if self.agent:
+            self.agent = None
+        print("Conversation history cleared")
+    
+    async def stream_response(self, user_message: str) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream agent response for a message."""
         try:
-            print(f"[DEBUG] Calling agent with message...")
-            # Use synchronous invoke instead of stream_async for now
-            result = session.agent(user_message)
-            print(f"[DEBUG] Agent returned result: {type(result)}")
-
-            # Extract text content from AgentResult
-            # Use the to_dict() method to get a clean dictionary representation
+            # Initialize agent if needed
+            self._initialize_agent()
+            
+            # Add user message
+            self.add_message('user', user_message)
+            
+            # Get response from agent
+            print(f"Invoking agent with message: {user_message[:50]}...")
+            result = self.agent(user_message)
+            
+            # Extract response using to_dict() method
             result_dict = result.to_dict()
-            print(f"[DEBUG] Result dict keys: {result_dict.keys()}")
-
-            # Extract content from the message
+            
             if 'message' in result_dict and result_dict['message']:
                 message_data = result_dict['message']
-                print(f"[DEBUG] Message data: {message_data}")
-
-                if 'content' in message_data and isinstance(message_data['content'], list):
-                    # Extract text from all content blocks
-                    text_parts = []
-                    for block in message_data['content']:
-                        if isinstance(block, dict) and 'text' in block:
-                            text_parts.append(block['text'])
-                    response_content = ''.join(text_parts)
-                elif 'content' in message_data and isinstance(message_data['content'], str):
-                    response_content = message_data['content']
+                
+                # Extract content from the message
+                if 'content' in message_data and message_data['content']:
+                    content_blocks = message_data['content']
+                    
+                    # Extract text content from all blocks
+                    response_content = ''
+                    if isinstance(content_blocks, list):
+                        for block in content_blocks:
+                            if isinstance(block, dict) and 'text' in block:
+                                response_content += block['text']
+                    elif isinstance(content_blocks, str):
+                        response_content = content_blocks
+                    
+                    if response_content:
+                        # Add assistant message
+                        self.add_message('assistant', response_content)
+                        
+                        # Stream response in chunks
+                        chunk_size = 10
+                        for i in range(0, len(response_content), chunk_size):
+                            chunk = response_content[i:i + chunk_size]
+                            yield {
+                                'type': 'message',
+                                'content': chunk
+                            }
+                            await asyncio.sleep(0.01)
+                    else:
+                        error_msg = "Agent returned empty response"
+                        self.add_message('assistant', error_msg)
+                        yield {
+                            'type': 'error',
+                            'message': error_msg
+                        }
                 else:
-                    response_content = str(message_data)
+                    error_msg = "No content in agent response"
+                    self.add_message('assistant', error_msg)
+                    yield {
+                        'type': 'error',
+                        'message': error_msg
+                    }
             else:
-                response_content = str(result)
-
-            print(f"[DEBUG] Response content type: {type(response_content)}")
-            print(f"[DEBUG] Response content length: {len(response_content)}")
-            print(f"[DEBUG] Response content preview: {response_content[:100] if len(response_content) > 100 else response_content}...")
-
-            # Stream the response in chunks
-            chunk_size = 10
-            for i in range(0, len(response_content), chunk_size):
-                chunk = response_content[i:i + chunk_size]
-                full_response.append(chunk)
-                yield {'type': 'message', 'content': chunk}
-                await asyncio.sleep(0.01)  # Small delay for streaming effect
-
-            # Store assistant message
-            assistant_msg = Message(
-                role='assistant',
-                content=response_content,
-                tools_used=tools_used
-            )
-            session.messages.append(assistant_msg)
-            print(f"[DEBUG] Assistant message stored")
-
+                error_msg = "Invalid response format from agent"
+                self.add_message('assistant', error_msg)
+                yield {
+                    'type': 'error',
+                    'message': error_msg
+                }
+            
             yield {'type': 'done'}
-
+            
         except Exception as e:
-            error_msg = f"Agent error: {str(e)}"
-            print(f"[ERROR] {error_msg}")
-            import traceback
+            error_msg = f"Error processing message: {str(e)}"
+            print(f"Error in stream_response: {error_msg}")
             traceback.print_exc()
-            yield {'type': 'error', 'message': error_msg}
-
-    def _cleanup_old_sessions(self):
-        """Remove sessions that have been inactive for too long."""
-        now = datetime.now()
-        timeout = timedelta(seconds=Config.SESSION_TIMEOUT)
-
-        sessions_to_remove = [
-            session_id
-            for session_id, session in self.sessions.items()
-            if now - session.last_activity > timeout
-        ]
-
-        for session_id in sessions_to_remove:
-            self.delete_session(session_id)
-
+            yield {
+                'type': 'error',
+                'message': error_msg
+            }
 
 # Global agent manager instance
 agent_manager = AgentManager()

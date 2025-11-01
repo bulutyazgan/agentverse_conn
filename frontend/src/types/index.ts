@@ -5,13 +5,6 @@ export interface Message {
   tools_used?: string[];
 }
 
-export interface Session {
-  session_id: string;
-  created_at: string;
-  last_activity: string;
-  message_count: number;
-}
-
 export interface StreamEvent {
   type: 'message' | 'tool' | 'done' | 'error';
   content?: string;
