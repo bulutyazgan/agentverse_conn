@@ -194,7 +194,7 @@ The Flask server runs in debug mode by default:
 
 ```bash
 cd backend
-source venv/bin/activate
+source ../.env/bin/activate  # Use shared project virtual environment
 python server.py  # Auto-reloads on file changes
 ```
 
@@ -212,7 +212,7 @@ npx tsc --noEmit  # Check TypeScript types
 **"Module not found" errors:**
 ```bash
 cd backend
-source venv/bin/activate
+source ../.env/bin/activate  # Use shared project virtual environment
 pip install -r requirements.txt
 ```
 
@@ -231,7 +231,7 @@ ollama list
 ### Frontend Issues
 
 **"Cannot connect to backend" errors:**
-- Ensure backend is running on port 5000
+- Ensure backend is running on port 5001
 - Check CORS_ORIGINS in backend/.env includes http://localhost:5173
 - Verify proxy configuration in vite.config.ts
 
@@ -287,7 +287,7 @@ Use Gunicorn instead of Flask's dev server:
 ```bash
 cd backend
 pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 server:app
+gunicorn -w 4 -b 0.0.0.0:5001 server:app
 ```
 
 ## Environment Variables
@@ -308,7 +308,7 @@ gunicorn -w 4 -b 0.0.0.0:5000 server:app
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| VITE_API_URL | http://localhost:5000 | Backend API URL |
+| VITE_API_URL | http://localhost:5001 | Backend API URL |
 
 ## License
 
