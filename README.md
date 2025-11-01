@@ -1,10 +1,10 @@
 # AgentVerse Connection
 
-A full-stack web application for interacting with AI agents powered by Strands Agents framework. Features real-time streaming conversations, multi-session management, and live tool usage monitoring.
+A full-stack web application for interacting with AI agents powered by Strands Agents framework. Features real-time streaming conversations with a clean, focused single-chat interface.
 
 ## Overview
 
-This project implements a web-based chat interface for Strands AI agents, allowing users to have interactive conversations with AI through a modern, responsive web UI. The application uses a Flask backend with Server-Sent Events (SSE) for real-time streaming and a React TypeScript frontend for a smooth user experience.
+This project implements a web-based chat interface for Strands AI agents, allowing users to have interactive conversations with AI through a modern, responsive web UI. The application uses a Flask backend with Server-Sent Events (SSE) for real-time streaming and a React TypeScript frontend for a smooth user experience. All conversations are stored in a single session with optional history clearing.
 
 ## Quick Start
 
@@ -33,7 +33,7 @@ For detailed setup instructions, see [README_WEBAPP.md](./README_WEBAPP.md).
 - **HTTP Client**: Fetch API with streaming
 
 ### Infrastructure
-- **Session Management**: In-memory with dataclasses
+- **Conversation Storage**: In-memory (single conversation)
 - **Development**: Hot Module Replacement (HMR) for both frontend and backend
 - **Ports**: Backend on 5001, Frontend on 5173
 
@@ -53,7 +53,6 @@ agentverse_conn/
 │   │   │   ├── ChatInterface.tsx
 │   │   │   ├── MessageList.tsx
 │   │   │   ├── InputBox.tsx
-│   │   │   ├── SessionSidebar.tsx
 │   │   │   └── ToolActivity.tsx
 │   │   ├── services/
 │   │   │   └── api.ts         # API client with streaming support
@@ -83,34 +82,34 @@ agentverse_conn/
 - **Chunked Response Display**: Text appears progressively as the agent generates it
 - **Low Latency**: Direct connection reduces overhead compared to polling
 
-### Session Management
-- **Multi-Session Support**: Handle up to 100 concurrent sessions
-- **Session Persistence**: Conversation history maintained per session
-- **Auto-Cleanup**: Inactive sessions removed after timeout (configurable)
-- **Session Switching**: Seamlessly switch between different conversations
+### Single Conversation Focus
+- **Streamlined Interface**: One continuous conversation without session management complexity
+- **Conversation History**: All messages preserved until manually cleared
+- **Clear Chat Button**: Easy history clearing when starting fresh
+- **Simplified State Management**: No session switching or selection needed
 
-### Tool Usage Monitoring
-- **Real-Time Tool Indicators**: Visual feedback when agent uses tools
+### Tool Usage Monitoring (UI Ready)
+- **Real-Time Tool Indicators**: Visual feedback when agent uses tools (backend support pending)
 - **Tool Status Tracking**: Shows active and completed tool usage
 - **Tool History**: Records which tools were used in each message
 
 ### User Interface
 - **Responsive Design**: Works on desktop and mobile devices
-- **Clean Aesthetics**: Modern UI with smooth animations
+- **Clean Aesthetics**: Modern UI with smooth animations and focused layout
 - **Keyboard Shortcuts**: Enter to send, efficient navigation
 - **Auto-Scroll**: Message list automatically scrolls to newest content
 
 ## Architecture Highlights
 
 ### Backend Design
-- **Session-Based Architecture**: Each conversation is an isolated session with its own agent instance
-- **Async Event Streaming**: Python asyncio handles concurrent SSE streams
+- **Single Conversation Architecture**: Global agent manager maintains one continuous conversation
+- **Async Event Streaming**: Python asyncio handles SSE streaming
 - **Lazy Model Loading**: Ollama model initialized on first use
-- **Thread-Safe Session Management**: Lock-based concurrency control
+- **Simplified State Management**: No session locking or complex lifecycle management
 
 ### Frontend Design
 - **Component-Based Architecture**: Reusable React components
-- **Custom Hooks**: `useChat` hook encapsulates chat logic
+- **Custom Hooks**: `useChat` hook encapsulates chat logic (no session ID needed)
 - **Type Safety**: Full TypeScript coverage
 - **Streaming Parser**: Handles SSE event parsing and state updates
 
@@ -118,9 +117,9 @@ agentverse_conn/
 ```
 User Input → Frontend (React)
     ↓
-API Request (POST /api/chat)
+API Request (POST /api/chat with message)
     ↓
-Flask Server → Agent Manager
+Flask Server → Agent Manager (single global instance)
     ↓
 Strands Agent → Ollama Model
     ↓
@@ -161,10 +160,10 @@ npx tsc --noEmit
 See [README_WEBAPP.md](./README_WEBAPP.md) for complete API documentation.
 
 **Key Endpoints:**
-- `POST /api/sessions` - Create new session
+- `GET /api/health` - Health check with message count
+- `GET /api/history` - Retrieve conversation history
 - `POST /api/chat` - Send message with streaming response
-- `GET /api/sessions/{id}/history` - Retrieve conversation history
-- `DELETE /api/sessions/{id}` - Delete session
+- `POST /api/clear` - Clear conversation history
 
 ## Configuration
 
@@ -177,8 +176,6 @@ SECRET_KEY=your-secret-key
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 OLLAMA_HOST=http://localhost:11435
 OLLAMA_MODEL=deepseek-r1:8b
-MAX_SESSIONS=100
-SESSION_TIMEOUT=3600
 ```
 
 **Frontend (`frontend/.env`):**

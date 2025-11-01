@@ -1,6 +1,6 @@
 # Strands Agent Web Application
 
-A web-based chat interface for interacting with Strands AI agents, featuring real-time streaming responses, session management, and tool usage visibility.
+A web-based chat interface for interacting with Strands AI agents, featuring real-time streaming responses and a clean, focused single-conversation interface.
 
 ## Architecture
 
@@ -12,11 +12,11 @@ A web-based chat interface for interacting with Strands AI agents, featuring rea
 ## Features
 
 - 🤖 Real-time streaming agent responses
-- 💬 Multi-session conversation management
-- 🔧 Live tool usage indicators
-- 📝 Conversation history tracking
+- 💬 Single continuous conversation
+- 🔧 Live tool usage indicators (UI ready, backend support pending)
+- 📝 Conversation history tracking with clear option
 - 🎨 Clean, responsive UI
-- 🔄 Session persistence
+- 🔄 Message persistence until manually cleared
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ curl http://localhost:11435/api/tags
 .
 ├── backend/
 │   ├── server.py           # Flask server with SSE endpoints
-│   ├── agent_manager.py    # Session and agent lifecycle management
+│   ├── agent_manager.py    # Agent lifecycle management (single conversation)
 │   ├── config.py           # Configuration management
 │   └── requirements.txt    # Python dependencies
 ├── frontend/
@@ -91,10 +91,6 @@ CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 # Ollama settings
 OLLAMA_HOST=http://localhost:11435
 OLLAMA_MODEL=deepseek-r1:8b
-
-# Session settings
-MAX_SESSIONS=100
-SESSION_TIMEOUT=3600
 ```
 
 #### Frontend (.env in frontend/)
@@ -148,32 +144,37 @@ Open your browser to: **http://localhost:5173**
 
 ## API Endpoints
 
-### Sessions
+### Health Check
 
-- `GET /api/sessions` - List all active sessions
-- `POST /api/sessions` - Create a new session
-- `DELETE /api/sessions/{id}` - Delete a session
-- `GET /api/sessions/{id}/history` - Get conversation history
-- `POST /api/sessions/{id}/clear` - Clear conversation history
+- `GET /api/health` - Health check with message count
+  - Response: `{ "status": "healthy", "message_count": 5 }`
+
+### Conversation History
+
+- `GET /api/history` - Get conversation history
+  - Response: `{ "messages": [...] }`
+
+- `POST /api/clear` - Clear conversation history
+  - Response: `{ "message": "History cleared" }`
 
 ### Chat
 
 - `POST /api/chat` - Send a message and stream response
-  - Request body: `{ "session_id": "uuid", "message": "text" }`
+  - Request body: `{ "message": "your message text" }`
   - Response: Server-Sent Events stream
-
-### Health
-
-- `GET /api/health` - Health check
+  - Events:
+    - `{ "type": "message", "content": "text chunk" }`
+    - `{ "type": "tool", "tool_name": "...", "status": "start/end" }` (pending backend implementation)
+    - `{ "type": "done" }`
+    - `{ "type": "error", "message": "..." }`
 
 ## Usage
 
-1. **Create a Session**: Click "New" in the sidebar or wait for auto-creation
-2. **Send Messages**: Type in the input box and press Enter (or click Send)
-3. **View Streaming**: Watch responses stream in real-time
-4. **Monitor Tools**: See which tools the agent uses during processing
-5. **Manage Sessions**: Switch between sessions or delete old ones
-6. **View History**: All messages are saved per session
+1. **Start Chatting**: Type your message in the input box and press Enter or click Send
+2. **View Streaming**: Watch responses stream in real-time as the agent generates them
+3. **Monitor Tools**: Tool usage indicators will appear when the agent uses tools (UI ready, backend pending)
+4. **Clear History**: Click "Clear Chat" button to start fresh conversation
+5. **View History**: All messages persist until you manually clear them or restart the server
 
 ## Development
 
@@ -301,8 +302,6 @@ gunicorn -w 4 -b 0.0.0.0:5001 server:app
 | CORS_ORIGINS | http://localhost:3000,... | Allowed CORS origins |
 | OLLAMA_HOST | http://localhost:11435 | Ollama server URL |
 | OLLAMA_MODEL | deepseek-r1:8b | Ollama model to use |
-| MAX_SESSIONS | 100 | Maximum concurrent sessions |
-| SESSION_TIMEOUT | 3600 | Session timeout (seconds) |
 
 ### Frontend
 

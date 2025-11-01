@@ -67,23 +67,28 @@ Complete agent framework with dependencies:
 
 ### Backend Architecture
 
-#### Session Management (`agent_manager.py`)
+#### Conversation Management (`agent_manager.py`)
 ```python
 @dataclass
-class Session:
-    session_id: str
-    created_at: datetime
-    last_activity: datetime
-    messages: List[Message]
-    agent: Optional[Agent]
+class Message:
+    role: str  # 'user' or 'assistant'
+    content: str
+    timestamp: datetime
+    tools_used: list
+
+class AgentManager:
+    def __init__(self):
+        self.messages: list[Message] = []
+        self.agent: Optional[Agent] = None
+        self.model = None
 ```
 
 **Key Features**:
-- Thread-safe operations with `threading.Lock`
+- Single global conversation instance
 - Lazy model initialization (Ollama model created on first use)
-- Automatic cleanup of inactive sessions
-- Maximum 100 concurrent sessions (configurable)
-- Session timeout: 3600 seconds (configurable)
+- No threading locks needed (single conversation)
+- Message history persists until cleared or server restart
+- Automatic agent reinitialization on history clear
 
 #### Message Structure
 ```python
@@ -97,10 +102,10 @@ class Message:
 
 #### Agent Invocation Flow
 1. User sends message via POST /api/chat
-2. Session retrieved from `agent_manager.sessions` dict
-3. Agent instance called: `result = session.agent(user_message)`
+2. Agent manager retrieved (global `agent_manager` instance)
+3. Agent instance called: `result = self.agent(user_message)`
 4. Result parsed: `result.to_dict()` extracts message data
-5. Response content extracted from `message['content']` array
+5. Response content extracted from `message['content']` array (list of dicts with `text` keys)
 6. Text streamed in chunks via SSE
 
 #### Server-Sent Events (SSE)
@@ -124,10 +129,17 @@ def generate():
     asyncio.set_event_loop(loop)
 
     async def stream():
-        async for event in agent_manager.stream_response(session_id, message):
+        async for event in agent_manager.stream_response(message):
             yield f"data: {json.dumps(event)}\n\n"
 
-    yield from loop.run_until_complete(stream())
+    # Run the async generator
+    gen = stream()
+    while True:
+        try:
+            chunk = loop.run_until_complete(gen.__anext__())
+            yield chunk
+        except StopAsyncIteration:
+            break
 ```
 
 #### Configuration (`config.py`)
@@ -135,7 +147,8 @@ Environment-based configuration using `os.getenv()`:
 - Flask settings (DEBUG, SECRET_KEY)
 - CORS origins
 - Ollama connection details
-- Session limits and timeouts
+
+**Note**: Session-related configs (MAX_SESSIONS, SESSION_TIMEOUT) removed in latest version.
 
 ---
 
@@ -195,28 +208,22 @@ Environment-based configuration using `os.getenv()`:
 
 **ChatInterface.tsx**
 - Main container component
-- Manages session selection
-- Coordinates sidebar and chat area
+- Manages history loading and clearing
+- Coordinates message list, tool activity, and input components
 - Props: None (root component)
 
 **MessageList.tsx**
 - Displays conversation history
 - Auto-scrolls to newest messages
-- Renders user and assistant messages differently
-- Props: `messages: Message[]`
+- Renders user and assistant messages with different styles
+- Shows "Thinking..." indicator during streaming
+- Props: `messages: Message[]`, `isStreaming: boolean`
 
 **InputBox.tsx**
 - Text input with send button
-- Keyboard shortcuts (Enter to send)
+- Keyboard shortcuts (Enter to send, Shift+Enter for new line)
 - Disabled during streaming
 - Props: `onSend: (message: string) => void`, `disabled: boolean`
-
-**SessionSidebar.tsx**
-- Lists all active sessions
-- Create/delete session functionality
-- Shows session metadata (message count, last activity)
-- Auto-refreshes every 10 seconds
-- Props: `currentSessionId`, `onSessionSelect`, `onNewSession`
 
 **ToolActivity.tsx**
 - Real-time tool usage indicators
@@ -225,19 +232,20 @@ Environment-based configuration using `os.getenv()`:
 - Auto-removes completed tools after 2 seconds
 - Props: `tools: ToolActivity[]`
 
+**Note**: SessionSidebar removed in latest version (single conversation only).
+
 #### Custom Hooks
 
 **useChat.ts**
 Central chat logic hook with state management:
 
 ```typescript
-export const useChat = (sessionId: string | null) => {
+export const useChat = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [activeTools, setActiveTools] = useState<ToolActivity[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [tools, setTools] = useState<ToolActivity[]>([]);
 
-  // Returns: messages, isStreaming, activeTools, error,
+  // Returns: messages, isStreaming, tools,
   //          sendMessage, loadHistory, clearMessages
 }
 ```
@@ -246,27 +254,28 @@ export const useChat = (sessionId: string | null) => {
 - Manages message state with optimistic updates
 - Handles SSE stream parsing
 - Updates UI incrementally as chunks arrive
-- Tracks tool usage in real-time
+- Tracks tool usage in real-time (when backend supports it)
 - Error handling and recovery
+- No session ID management (simplified from previous version)
 
 #### API Service (`services/api.ts`)
 
 **ApiService Class Methods**:
 - `healthCheck()`: GET /api/health
-- `listSessions()`: GET /api/sessions
-- `createSession()`: POST /api/sessions
-- `deleteSession(id)`: DELETE /api/sessions/{id}
-- `getHistory(id)`: GET /api/sessions/{id}/history
-- `clearHistory(id)`: POST /api/sessions/{id}/clear
-- `streamChat(id, message)`: POST /api/chat with streaming
+- `getHistory()`: GET /api/history
+- `clearHistory()`: POST /api/clear
+- `streamChat(message)`: POST /api/chat with streaming
+
+**Removed Methods** (from previous version):
+- `listSessions()`, `createSession()`, `deleteSession()`, `getHistory(sessionId)`, `clearHistory(sessionId)`
 
 **Streaming Implementation**:
 ```typescript
-async *streamChat(sessionId: string, message: string): AsyncGenerator<any> {
+async *streamChat(message: string): AsyncGenerator<any> {
   const response = await fetch(`${this.baseUrl}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify({ message }),  // No session_id needed
   });
 
   const reader = response.body?.getReader();
@@ -300,13 +309,6 @@ export interface Message {
   tools_used?: string[];
 }
 
-export interface Session {
-  session_id: string;
-  created_at: string;
-  last_activity: string;
-  message_count: number;
-}
-
 export interface StreamEvent {
   type: 'message' | 'tool' | 'done' | 'error';
   content?: string;
@@ -320,6 +322,8 @@ export interface ToolActivity {
   status: 'active' | 'completed';
 }
 ```
+
+**Note**: `Session` interface removed in latest version.
 
 #### Styling System
 
@@ -389,15 +393,12 @@ npm run dev
 
 #### Singleton Pattern
 - `AgentManager` has global instance: `agent_manager`
-- Ensures single point of session management
+- Ensures single conversation point
+- No session dictionary or complex state management
 
 #### Factory Pattern
-- Agent creation on session initialization
+- Agent creation on first message
 - Lazy model loading for Ollama
-
-#### Repository Pattern
-- `AgentManager` acts as repository for sessions
-- CRUD operations: create, get, delete, list
 
 #### Observer Pattern (via SSE)
 - Server pushes updates to connected clients
@@ -428,7 +429,7 @@ npm run dev
 
 ### Response Extraction Logic
 
-**Critical Implementation** (`agent_manager.py:160-182`):
+**Critical Implementation** (`agent_manager.py:95-108`):
 ```python
 # Use to_dict() to properly extract nested structure
 result_dict = result.to_dict()
@@ -436,19 +437,25 @@ result_dict = result.to_dict()
 if 'message' in result_dict and result_dict['message']:
     message_data = result_dict['message']
 
-    if 'content' in message_data and isinstance(message_data['content'], list):
-        # Extract text from content blocks
-        text_parts = []
-        for block in message_data['content']:
-            if isinstance(block, dict) and 'text' in block:
-                text_parts.append(block['text'])
-        response_content = ''.join(text_parts)
+    if 'content' in message_data and message_data['content']:
+        content_blocks = message_data['content']
+        
+        # Extract text content from all blocks
+        response_content = ''
+        if isinstance(content_blocks, list):
+            for block in content_blocks:
+                if isinstance(block, dict) and 'text' in block:
+                    response_content += block['text']
+        elif isinstance(content_blocks, str):
+            response_content = content_blocks
 ```
 
 **Why This Matters**:
 - Strands `AgentResult` has complex nested structure
 - Direct string conversion gives dictionary representation
-- Must extract from `result.message.content[0]['text']`
+- Content blocks have `text` key directly (NO `type: 'text'` field)
+- Must concatenate all blocks (not just first one)
+- Must handle both list and string formats
 
 ### Streaming Chunk Size
 
@@ -463,24 +470,19 @@ for i in range(0, len(response_content), chunk_size):
 
 This creates a typewriter effect in the UI.
 
-### Session Cleanup Strategy
+### History Clearing
 
 ```python
-def _cleanup_old_sessions(self):
-    now = datetime.now()
-    timeout = timedelta(seconds=Config.SESSION_TIMEOUT)
-
-    sessions_to_remove = [
-        session_id
-        for session_id, session in self.sessions.items()
-        if now - session.last_activity > timeout
-    ]
-
-    for session_id in sessions_to_remove:
-        self.delete_session(session_id)
+def clear_history(self):
+    """Clear conversation history."""
+    self.messages = []
+    # Reinitialize agent to clear its context
+    if self.agent:
+        self.agent = None
+    print("Conversation history cleared")
 ```
 
-Runs when session limit reached.
+Removes all messages and resets agent state for fresh start.
 
 ### Error Handling
 
@@ -527,14 +529,13 @@ sendMessage(123)  // ❌ Error: Argument of type 'number' not assignable to 'str
 
 ### Backend
 - Lazy Ollama model loading (only loads when first needed)
-- In-memory session storage (fast access)
-- Asyncio for concurrent SSE streams
-- Minimal session data (no unnecessary caching)
+- In-memory message storage (fast access)
+- Asyncio for SSE streaming
+- Minimal conversation data (no unnecessary caching)
 
 ### Frontend
 - Vite's lightning-fast HMR
 - Component-level re-rendering (React optimization)
-- Debounced session list refresh (10s interval)
 - Efficient SSE stream parsing (incremental buffer processing)
 
 ---
@@ -543,9 +544,8 @@ sendMessage(123)  // ❌ Error: Argument of type 'number' not assignable to 'str
 
 ### Backend
 - CORS restricts allowed origins
-- Session timeout prevents resource exhaustion
-- Max session limit (100) prevents abuse
 - No authentication (local development only)
+- No session management complexity
 
 ### Frontend
 - No sensitive data stored in browser
@@ -596,12 +596,13 @@ python-dotenv==1.0.0
 Potential improvements:
 - Persistent storage (SQLite, PostgreSQL)
 - User authentication
+- Tool usage detection and emission in backend
 - File upload support
 - Markdown rendering in messages
 - Code syntax highlighting
 - Export conversation history
-- Custom agent configurations per session
-- Multi-user support with room system
+- Custom agent configurations
+- Multi-user support with isolated conversations
 - WebSocket alternative to SSE
 - Production deployment configurations
 
