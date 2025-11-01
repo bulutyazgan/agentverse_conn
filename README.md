@@ -1,3 +1,1 @@
-First commit - setup
-
-test - branch
+This is an implementation of strands agents for an agentic AI project. The context of the project isn't determined yet. Exploring the tech stack.
